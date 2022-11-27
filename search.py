@@ -12,6 +12,7 @@ from matplotlib import pyplot as plt
 from functools import cached_property
 import numpy as np
 import argparse
+import csv
 
 
 def random_strand(length: int = None) -> Strand:
@@ -199,7 +200,7 @@ class SearchState:
 
     def save(self) -> None:
         stamp = datetime.now().strftime(r"%d-%m@%H-%M-%S")
-        fname = os.path.expanduser("~") + "\\src\\search_state\\" + stamp
+        fname = os.path.join("search_state", stamp)
 
         with open(fname + ".pickle", mode="xb") as f:
             pickle.dump(self, f, pickle.HIGHEST_PROTOCOL)
@@ -246,6 +247,13 @@ class SelfRepBatch:
     def strict(self) -> bool:
         """do copies of these strands appear in the same generation?"""
         return self.cycle2 is None or len(self.cycle1) == len(self.cycle2)
+
+    @property
+    def k(self) -> int:
+        """smallest k such that this batch contains k-SRs
+        (SRs whose copies appear within k generations)"""
+        return max(map(len, self.cycles))
+
     
     
     def prove(self) -> None:
@@ -490,26 +498,29 @@ def print_time_since(t_start: datetime):
     print(f"[t={mins}:{secs:02}, expanded={total_expanded}]")
 
 
+def get_arguments():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("-c", "--max_cycle", metavar="L", type=int, help="cycle length limit")
+    parser.add_argument("-v", "--verbosity", action="count", default=0,
+                        help="increase output verbosity (up to 3 times, eg. -vvv)")
+    parser.add_argument("-p", "--plot_stats", action="store_true",
+                        help="show and save plot of search statistics")
 
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("-c", "--max_cycle", metavar="L", type=int, help="cycle length limit")
-parser.add_argument("-v", "--verbosity", action="count", default=0,
-                    help="increase output verbosity (up to 3 times, eg. -vvv)")
-parser.add_argument("-p", "--plot_stats", action="store_true",
-                    help="show and save plot of search statistics")
+    subparsers = parser.add_subparsers(help="search methods", required=True, 
+                                    dest="method_name")
+    subparsers.add_parser("lex", help="lexicographic search")
 
-subparsers = parser.add_subparsers(help="search methods", required=True, 
-                                   dest="method_name")
-subparsers.add_parser("lex", help="lexicographic search")
+    heur = subparsers.add_parser("hrs", help="heuristic search")
+    heur.add_argument("-p", "--deq_batch", type=int, metavar="P", default=1,
+                    help="dequeue P strands for every new one (default: P=1)")
 
-heur = subparsers.add_parser("hrs", help="heuristic search")
-heur.add_argument("-p", "--deq_batch", type=int, metavar="P", default=1,
-                  help="dequeue P strands for every new one (default: P=1)")
+    heur.add_argument("-s", "--similarity_weight", type=float, metavar="W", default=0,
+                    help="fitness = W * similarity - length (default: W=0)")
+    return parser.parse_args()
 
-heur.add_argument("-s", "--similarity_weight", type=float, metavar="W", default=0,
-                  help="fitness = W * similarity - length (default: W=0)")
 
-args = parser.parse_args()
+
+args = get_arguments() 
 
 if args.method_name == "lex":
     batch_gen = lexicographic_search(cycle_maxlen=args.max_cycle)
@@ -530,11 +541,18 @@ stats = {
 unique_selfreps: Set[Strand] = set()
 strict_selfreps: Set[Strand] = set()
 longest_useful_cycle = -1
+sr2k: Dict[Strand, int] = {} # s -> k where s is a k-SR
 
 print("starting search, press ctrl+C to stop")
 t0 = datetime.now()
 
 for batch in batch_gen:
+    for s in batch:
+        if s in sr2k:
+            sr2k[s] = min(sr2k[s], batch.k)
+        else:
+            sr2k[s] = batch.k
+
     new_strands = [s for s in batch if s not in unique_selfreps]
     new_strict = [s for s in batch if s not in strict_selfreps] if batch.strict else []
 
@@ -570,6 +588,12 @@ else:
 print("\nelapsed ", end=""); print_time_since(t0)
 if longest_useful_cycle != -1:
     print(f"longest cycle that proved something new: {longest_useful_cycle} edges")
+
+with open("self_reps.csv", "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(["self_rep", "k"]) # header
+    writer.writerows(sr2k.items())
+
 
 if args.plot_stats:
     plot_stats(stats, n_figures=3 if args.method_name == "lex" else 4)
